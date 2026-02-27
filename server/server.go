@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -30,6 +31,7 @@ import (
 	"golang.stackrox.io/grpc-http1/internal/sliceutils"
 	"golang.stackrox.io/grpc-http1/internal/stringutils"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 const (
@@ -84,6 +86,7 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	}()
 
 	grpcSrv.ServeHTTP(grpcResponseWriter, grpcReq)
+	grpcCode := grpcStatusCodeFromHeader(grpcResponseWriter.Header())
 	if err := grpcResponseWriter.Close(); err != nil {
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
 	}
@@ -91,7 +94,48 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	wg.Wait()
 	// It's ok to potentially close the connection multiple times.
 	// Only the first time matters.
-	_ = conn.Close(websocket.StatusNormalClosure, "")
+	_ = conn.Close(websocketCloseStatusFromGRPCCode(grpcCode), websocketCloseReasonFromGRPCCode(grpcCode))
+}
+
+func grpcStatusCodeFromHeader(hdr http.Header) codes.Code {
+	statusCode := hdr.Get("Grpc-Status")
+	if statusCode == "" {
+		statusCode = hdr.Get(http.TrailerPrefix + "Grpc-Status")
+	}
+	if statusCode == "" {
+		return codes.OK
+	}
+
+	codeInt, err := strconv.Atoi(statusCode)
+	if err != nil {
+		return codes.Unknown
+	}
+	return codes.Code(codeInt)
+}
+
+func websocketCloseStatusFromGRPCCode(code codes.Code) websocket.StatusCode {
+	switch code {
+	case codes.OK:
+		return websocket.StatusNormalClosure
+	case codes.Canceled:
+		return websocket.StatusGoingAway
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists, codes.PermissionDenied, codes.FailedPrecondition,
+		codes.Aborted, codes.OutOfRange, codes.Unauthenticated:
+		return websocket.StatusPolicyViolation
+	case codes.ResourceExhausted, codes.DeadlineExceeded, codes.Unavailable:
+		return websocket.StatusTryAgainLater
+	case codes.Unimplemented:
+		return websocket.StatusUnsupportedData
+	default:
+		return websocket.StatusInternalError
+	}
+}
+
+func websocketCloseReasonFromGRPCCode(code codes.Code) string {
+	if code == codes.OK {
+		return ""
+	}
+	return fmt.Sprintf("grpc-status=%s", code.String())
 }
 
 func handleGRPCWeb(w http.ResponseWriter, req *http.Request, validPaths map[string]struct{}, grpcSrv *grpc.Server, srvOpts *options) {

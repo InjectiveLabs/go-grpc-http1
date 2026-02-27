@@ -119,6 +119,9 @@ func (c *websocketConn) readFromServer() error {
 				if err == io.EOF {
 					return nil
 				}
+			default:
+				// Once trailers are read, any close frame indicates end-of-stream.
+				return nil
 			}
 
 			return errors.Wrap(err, "non-EOF error while reading response body")
