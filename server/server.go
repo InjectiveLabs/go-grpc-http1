@@ -18,11 +18,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/golang/glog"
@@ -93,7 +95,10 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	wg.Wait()
 	// It's ok to potentially close the connection multiple times.
 	// Only the first time matters.
-	_ = conn.Close(websocketCloseStatusFromGRPCCode(grpcCode), websocketCloseReasonFromGRPCCode(grpcCode))
+	_ = conn.Close(
+		websocketCloseStatusFromGRPCCode(grpcCode),
+		websocketCloseReasonFromGRPCHeader(grpcCode, grpcResponseWriter.Header()),
+	)
 }
 
 func grpcStatusCodeFromHeader(hdr http.Header) codes.Code {
@@ -130,11 +135,52 @@ func websocketCloseStatusFromGRPCCode(code codes.Code) websocket.StatusCode {
 	}
 }
 
-func websocketCloseReasonFromGRPCCode(code codes.Code) string {
+func websocketCloseReasonFromGRPCHeader(code codes.Code, hdr http.Header) string {
 	if code == codes.OK {
 		return ""
 	}
-	return fmt.Sprintf("grpc-status=%s", code.String())
+
+	reason := grpcStatusMessageFromHeader(hdr)
+	if reason == "" {
+		reason = fmt.Sprintf("grpc-status=%s", code.String())
+	}
+
+	return truncateUTF8ByBytes(reason, 123)
+}
+
+func grpcStatusMessageFromHeader(hdr http.Header) string {
+	msg := hdr.Get("Grpc-Message")
+	if msg == "" {
+		msg = hdr.Get(http.TrailerPrefix + "Grpc-Message")
+	}
+	if msg == "" {
+		return ""
+	}
+
+	decoded, err := url.PathUnescape(msg)
+	if err != nil {
+		return msg
+	}
+	return decoded
+}
+
+func truncateUTF8ByBytes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+
+	i := 0
+	for i < len(s) {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if i+size > max {
+			break
+		}
+		i += size
+	}
+	return s[:i]
 }
 
 func handleGRPCWeb(w http.ResponseWriter, req *http.Request, validPaths map[string]struct{}, grpcSrv *grpc.Server, srvOpts *options) {
