@@ -15,13 +15,17 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/golang/glog"
@@ -29,6 +33,7 @@ import (
 	"golang.stackrox.io/grpc-http1/internal/grpcwebsocket"
 	"golang.stackrox.io/grpc-http1/internal/size"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 const (
@@ -48,7 +53,8 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	}
 	conn.SetReadLimit(64 * size.MB)
 
-	ctx := req.Context()
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
 
 	grpcReq := req.Clone(ctx)
 	grpcReq.ProtoMajor, grpcReq.ProtoMinor, grpcReq.Proto = 2, 0, "HTTP/2.0"
@@ -68,7 +74,7 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	grpcReq.ContentLength = -1
 
 	// Set the body to a custom WebSocket reader.
-	grpcReq.Body = newWebSocketReader(ctx, conn)
+	grpcReq.Body = newWebSocketReader(ctx, conn, cancel)
 
 	// Use a custom WebSocket http.ResponseWriter to write messages back to the client.
 	grpcResponseWriter, respReader := newWebSocketResponseWriter()
@@ -77,12 +83,18 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := grpcwebsocket.Write(ctx, conn, respReader, name); err != nil {
+		err := grpcwebsocket.Write(ctx, conn, respReader, name)
+		// Unblock any pending or future writes from the gRPC server into the pipe.
+		_ = respReader.Close()
+		if err != nil {
+			// The client is gone: cancel the request so the gRPC stream terminates.
+			cancel()
 			_ = conn.Close(websocket.StatusInternalError, err.Error())
 		}
 	}()
 
 	grpcSrv.ServeHTTP(grpcResponseWriter, grpcReq)
+	grpcCode := grpcStatusCodeFromHeader(grpcResponseWriter.Header())
 	if err := grpcResponseWriter.Close(); err != nil {
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
 	}
@@ -90,7 +102,92 @@ func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server
 	wg.Wait()
 	// It's ok to potentially close the connection multiple times.
 	// Only the first time matters.
-	_ = conn.Close(websocket.StatusNormalClosure, "")
+	_ = conn.Close(
+		websocketCloseStatusFromGRPCCode(grpcCode),
+		websocketCloseReasonFromGRPCHeader(grpcCode, grpcResponseWriter.Header()),
+	)
+}
+
+func grpcStatusCodeFromHeader(hdr http.Header) codes.Code {
+	statusCode := hdr.Get("Grpc-Status")
+	if statusCode == "" {
+		statusCode = hdr.Get(http.TrailerPrefix + "Grpc-Status")
+	}
+	if statusCode == "" {
+		return codes.OK
+	}
+
+	codeInt, err := strconv.Atoi(statusCode)
+	if err != nil {
+		return codes.Unknown
+	}
+	return codes.Code(codeInt)
+}
+
+func websocketCloseStatusFromGRPCCode(code codes.Code) websocket.StatusCode {
+	switch code {
+	case codes.OK:
+		return websocket.StatusNormalClosure
+	case codes.Canceled:
+		return websocket.StatusGoingAway
+	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists, codes.PermissionDenied, codes.FailedPrecondition,
+		codes.Aborted, codes.OutOfRange, codes.Unauthenticated:
+		return websocket.StatusPolicyViolation
+	case codes.ResourceExhausted, codes.DeadlineExceeded, codes.Unavailable:
+		return websocket.StatusTryAgainLater
+	case codes.Unimplemented:
+		return websocket.StatusUnsupportedData
+	default:
+		return websocket.StatusInternalError
+	}
+}
+
+func websocketCloseReasonFromGRPCHeader(code codes.Code, hdr http.Header) string {
+	if code == codes.OK {
+		return ""
+	}
+
+	reason := grpcStatusMessageFromHeader(hdr)
+	if reason == "" {
+		reason = fmt.Sprintf("grpc-status=%s", code.String())
+	}
+
+	return truncateUTF8ByBytes(reason, 123)
+}
+
+func grpcStatusMessageFromHeader(hdr http.Header) string {
+	msg := hdr.Get("Grpc-Message")
+	if msg == "" {
+		msg = hdr.Get(http.TrailerPrefix + "Grpc-Message")
+	}
+	if msg == "" {
+		return ""
+	}
+
+	decoded, err := url.PathUnescape(msg)
+	if err != nil {
+		return msg
+	}
+	return decoded
+}
+
+func truncateUTF8ByBytes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+
+	i := 0
+	for i < len(s) {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if i+size > max {
+			break
+		}
+		i += size
+	}
+	return s[:i]
 }
 
 func handleGRPCWeb(w http.ResponseWriter, req *http.Request, validPaths map[string]struct{}, grpcSrv *grpc.Server, srvOpts *options) {
