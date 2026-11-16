@@ -27,6 +27,8 @@ func PreferGRPCWeb(prefer bool) Option {
 	})
 }
 
+// WebSocketCompression configures WebSocket compression negotiation and the
+// outgoing message size threshold in bytes. Compression is disabled by default.
 func WebSocketCompression(mode websocket.CompressionMode, threshold int) Option {
 	return webSocketCompressionOption{mode: mode, threshold: threshold}
 }

@@ -76,7 +76,7 @@ type wsTestEnv struct {
 	tracker  *wsHandlerTracker
 }
 
-func startWSStream(t *testing.T, ctx context.Context, handler grpc.StreamHandler) *wsTestEnv {
+func startWSStream(ctx context.Context, t *testing.T, handler grpc.StreamHandler) *wsTestEnv {
 	grpcSrv := grpc.NewServer(grpc.UnknownServiceHandler(handler))
 	t.Cleanup(func() { stopWithTimeout(t, grpcSrv) })
 
@@ -124,7 +124,7 @@ func TestHandleGRPCWS_ReleasesStreamWhenClientConnectionDrops(t *testing.T) {
 	defer cancel()
 
 	stream := &infiniteStreamServer{started: make(chan struct{}), done: make(chan error, 1)}
-	env := startWSStream(t, ctx, stream.handle)
+	env := startWSStream(ctx, t, stream.handle)
 
 	require.NoError(t, env.conn.Write(ctx, websocket.MessageBinary, grpcproto.MakeMessageHeader(0, 0)))
 	waitFor(t, stream.started, "stream handler did not start")
@@ -148,7 +148,7 @@ func TestHandleGRPCWS_ReleasesIdleStreamWhenClientConnectionDrops(t *testing.T) 
 
 	started := make(chan struct{})
 	done := make(chan struct{})
-	env := startWSStream(t, ctx, func(_ any, stream grpc.ServerStream) error {
+	env := startWSStream(ctx, t, func(_ any, stream grpc.ServerStream) error {
 		defer close(done)
 		if err := stream.SendMsg(&grpc_health_v1.HealthCheckResponse{}); err != nil {
 			return err
@@ -172,7 +172,7 @@ func TestHandleGRPCWS_EndOfStreamIsHalfClose(t *testing.T) {
 	defer cancel()
 
 	received := make(chan struct{})
-	env := startWSStream(t, ctx, func(_ any, stream grpc.ServerStream) error {
+	env := startWSStream(ctx, t, func(_ any, stream grpc.ServerStream) error {
 		for {
 			err := stream.RecvMsg(&grpc_health_v1.HealthCheckRequest{})
 			if errors.Is(err, io.EOF) {
