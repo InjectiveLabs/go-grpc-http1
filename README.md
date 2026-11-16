@@ -52,6 +52,19 @@ which returns a `http.Handler` that can be served by a Go HTTP server. It is cru
 configured to support HTTP/2; otherwise, your clients using the vanilla gRPC client will no longer be able
 to talk to it. You can find an example of how to do so in the `_integration-tests/` directory.
 
+WebSocket compression is disabled by default. To negotiate permessage-deflate with
+clients that offer it, pass `server.WebSocketCompression` to the handler:
+
+```go
+handler := server.CreateDowngradingHandler(grpcServer, httpHandler,
+    server.WebSocketCompression(websocket.CompressionNoContextTakeover, 512))
+```
+
+The mode and threshold follow `github.com/coder/websocket`'s accept options.
+Clients without a compatible extension offer continue to use uncompressed messages.
+This option changes WebSocket compression only; gRPC message compression remains
+independent and can be disabled by the application to avoid compressing twice.
+
 ### Client-Side
 
 For connecting to a gRPC server via a client-side proxy, use the `ConnectViaProxy` function exported from the

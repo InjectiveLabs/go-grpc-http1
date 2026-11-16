@@ -41,11 +41,11 @@ const (
 )
 
 // handleGRPCWS handles gRPC requests via WebSockets.
-func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server) {
+func handleGRPCWS(w http.ResponseWriter, req *http.Request, grpcSrv *grpc.Server, opts *options) {
 	// TODO: Accept the websocket on-demand. For now, this is fine.
-	// Accept a WebSocket connection. No need for compression, as gRPC already compresses messages.
 	conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{
-		CompressionMode: websocket.CompressionDisabled,
+		CompressionMode:      opts.webSocketCompressionMode,
+		CompressionThreshold: opts.webSocketCompressionThreshold,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("accepting websocket connection: %v", err), http.StatusInternalServerError)
@@ -274,7 +274,7 @@ func CreateDowngradingHandler(grpcSrv *grpc.Server, httpHandler http.Handler, op
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		} else if isUpgrade {
-			handleGRPCWS(w, req, grpcSrv)
+			handleGRPCWS(w, req, grpcSrv, &serverOpts)
 			return
 		}
 

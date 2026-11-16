@@ -43,7 +43,7 @@ type wsHandlerTracker struct {
 
 func (h *wsHandlerTracker) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer close(h.done)
-	handleGRPCWS(w, req, h.grpcSrv)
+	handleGRPCWS(w, req, h.grpcSrv, &options{})
 }
 
 type connRecorder struct {
