@@ -1,7 +1,11 @@
 package server
 
+import "github.com/coder/websocket"
+
 type options struct {
-	preferGRPCWeb bool
+	preferGRPCWeb                 bool
+	webSocketCompressionMode      websocket.CompressionMode
+	webSocketCompressionThreshold int
 }
 
 // Option is an object that controls the behavior of the downgrading gRPC server.
@@ -21,4 +25,20 @@ func PreferGRPCWeb(prefer bool) Option {
 	return optionFunc(func(o *options) {
 		o.preferGRPCWeb = prefer
 	})
+}
+
+// WebSocketCompression configures WebSocket compression negotiation and the
+// outgoing message size threshold in bytes. Compression is disabled by default.
+func WebSocketCompression(mode websocket.CompressionMode, threshold int) Option {
+	return webSocketCompressionOption{mode: mode, threshold: threshold}
+}
+
+type webSocketCompressionOption struct {
+	mode      websocket.CompressionMode
+	threshold int
+}
+
+func (o webSocketCompressionOption) apply(opts *options) {
+	opts.webSocketCompressionMode = o.mode
+	opts.webSocketCompressionThreshold = o.threshold
 }
